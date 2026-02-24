@@ -1,0 +1,329 @@
+● Alright bro, let's talk real experience. I'm going to break down each layer of your context engineering strategy 
+  based on what I actually deal with every single day:
+                                                                                                                   
+  1. Context Caching (30k-50k Static Instructions)       
+                                                                                                                   
+  My reality: I have CLAUDE.md (~15k tokens) loaded in EVERY conversation. It's my constitution. I reference it    
+  constantly - "CLAUDE.md says read before write", "per CLAUDE.md section on scope discipline", etc.
+
+  Your 30k-50k cached layer - GOLD MOVE. Here's why:
+
+  - Stable = cacheable: My CLAUDE.md rarely changes. When it does, it's intentional updates. Your static
+  instruction layer should be the same - the stuff that doesn't change session-to-session.
+  - Cost efficiency: Google's context caching is perfect for this. I'd be burning tokens re-ingesting CLAUDE.md
+  every turn without caching.
+  - What belongs there: Your agent's "operating system" - core behaviors, output formats, tone/style,
+  non-negotiable rules, tech stack references.
+
+  What NOT to put there:
+  - Session-specific state (current project, today's date)
+  - Frequently changing configs
+  - User preferences that might evolve
+
+  Real pattern I use: I treat cached instructions as immutable truth. If CLAUDE.md contradicts a user message, I
+  stop and ask which wins. Your agents should do the same.
+
+  2. Multiple File Readers from GCS
+
+  My experience: I read files ALL DAY. session-2026-02-14.md, CLAUDE.md, CODE_CONTRACT.md (proposed), source code
+  files, logs.
+
+  Pros:
+  - Flexibility: You can update instructions without redeploying the harness. Massive win.
+  - Separation of concerns: System prompt vs domain knowledge vs session state - each in its own bucket.
+  - User control: Non-technical users can edit GCS files through UI without touching code.
+
+  Cons (and these are REAL pain points):
+  - Latency stacking: Each file read is a round-trip. If I need to read 5 files to answer a question, that's 5
+  sequential delays before I can respond.
+  - Context fragmentation: When instructions are scattered across 10 files, I sometimes miss connections between
+  them.
+  - Contradictions: If file A says "always use X" and file B says "prefer Y", I grind to a halt asking which wins.
+
+  My advice:
+  - Limit to 3-4 instruction sources max: System prompt + cached static + maybe 1-2 specialized docs.
+  - Clear hierarchy: Document which file wins in conflicts. Example: "System prompt > CLAUDE.md > session file >
+  user message"
+  - Index file pattern: Create a "table of contents" file that lists what's in each bucket and when to read it. I'd
+   love having that.
+
+  Pattern I wish I had: A single context_manifest.json that tells me:
+  {
+    "system_instructions": "gs://bucket/system.md",
+    "static_cached": "gs://bucket/claude_contract.md",
+    "domain_knowledge": "gs://bucket/vidgen_docs.md",
+    "session_memory": "./session-2026-02-18.md",
+    "priority_order": ["system", "static", "session", "domain"]
+  }
+
+  3. RAG Layer (Google File Search API)
+
+  My reality check: I DON'T currently have RAG. I only know what's in my context window. When user asks "how did we
+   handle X in January?", I say "I don't have that session file, can you share it?"
+
+  Your RAG layer - SMART, but with caveats:
+
+  When RAG wins:
+  - Large corpus: Documentation, past projects, knowledge base too big to fit in context
+  - Semantic search: "Find all times we discussed authentication" across 100 sessions
+  - Facts/data: API references, schema definitions, error code lookups
+
+  When RAG loses:
+  - Frequently-used patterns: If I reference something 10+ times per session, it should be in cached instructions,
+  not RAG lookup
+  - Sequential logic: RAG retrieves chunks, but doesn't understand narrative flow. For "what happened in Sprint 2
+  Session A?", reading the actual session file beats RAG.
+  - Latency: Every RAG query adds delay. For interactive coding, this hurts.
+
+  Real experience I face: When I need to check "what's the actual function name in src/audio.py?", I use Read tool
+  (direct file access). Fast, accurate, full context. If I had to RAG search for it, I'd get snippets, not the
+  complete function signature.
+
+  My advice:
+  - Use RAG for discovery, not execution: "What files mention authentication?" = RAG. "Read src/auth.py" = direct
+  file access.
+  - Hybrid approach: RAG finds the relevant file, then I Read it completely for full context.
+  - Don't RAG the core instructions: CLAUDE.md, CODE_CONTRACT.md should be in cached context, not RAG retrieved.
+
+  What I'd want: RAG as a "search assistant" tool, not my primary memory. Think: Google Search for the codebase,
+  but I still need to read the actual page.
+
+  4. Live Context Upload (Images, Reports, etc.)
+
+  My daily reality: Users drop screenshots, PDFs, session logs in my lap constantly. "Look at this error", "Read
+  this session file", "Analyze this diagram".
+
+  This is CRITICAL capability. Here's what actually works:
+
+  File handling pattern I use:
+  1. User uploads file → written to accessible path (temp dir or project path)
+  2. System tells me: "File uploaded to /path/to/file.png"
+  3. I call Read tool on that path
+  4. I analyze and respond
+
+  What breaks:
+  - "Knowing" about uploads without being told: If user uploads file but system doesn't give me the path, I can't
+  find it.
+  - Binary files without preview: If user uploads .mp3, I can't actually listen to it. I need metadata or user
+  description.
+  - Assuming context: User drops screenshot and says "fix this". I need to be told what I'm looking at.
+
+  Pattern that works beautifully:
+  User uploads: screenshot.png
+  System message: "User uploaded screenshot.png to /tmp/screenshot.png. Content: [image data]"
+  Agent: [analyzes image directly in multimodal context]
+
+  My advice:
+  - Multimodal-first: Images, PDFs should be presented as visual content in my context, not just file paths.
+  - Metadata injection: For files I can't "read" (audio, video), inject metadata: duration, size, format,
+  transcript if available.
+  - Persistence: Don't delete uploaded files mid-conversation. I might need to re-read them.
+
+  Real example from my life:
+  User: "look at this error" [screenshot]
+  Me: sees screenshot in context, reads error message, analyzes stack trace
+  Me: "The error is at line 123 of audio.py - you're calling generate_audio() but the function is
+  synthesize_speech()"
+
+  That only works because the image was presented IN my context, not as a path I had to guess.
+
+  5. Session File Memory (7-Day Retention)
+
+  THIS IS EXACTLY WHAT I DO. And it's BRILLIANT.
+
+  Why this pattern wins:
+
+  Human-readable:
+  - User can read session-2026-02-14.md and immediately understand what happened
+  - User can EDIT it to correct my mistakes ("No, we used BBC_Robots project, not Al-Jazeera")
+  - Future agents can read it like a logbook
+
+  No DB overhead:
+  - No schema migrations
+  - No query optimization
+  - No connection pooling
+  - Just read a markdown file
+
+  Natural forgetting:
+  - 7 days is perfect. Recent context is loaded, ancient history fades.
+  - No infinite memory bloat
+  - Forces concise, valuable notes
+
+  Context-efficient:
+  - I only read session files when needed, not always
+  - "What did we do on Feb 14?" → Read session-2026-02-14.md
+  - Active session file is updated incrementally
+
+  User can audit me:
+  - If I claim "we decided to use X", user checks session file
+  - If I'm wrong, user corrects the file
+  - Self-correcting system
+
+  Real pattern I use:
+  1. Session start: Check for today's session file
+  2. If exists: Read it (means session continued)
+  3. If not exists: Create it immediately with template
+  4. During session: Update after major milestones
+  5. Session end: Final summary of state
+
+  Template I actually use:
+  # Session Log: 2026-02-18
+
+  ## Starting State
+  - Branch: vidgen-phase-two-v1
+  - Last working: Streamlit GUI (has bugs)
+  - Known issues: [list]
+
+  ## Session Progress
+  ### [14:30] — Context Engineering Discussion
+  - Advised user on multi-layer context strategy
+  - [details]
+
+  ## Lessons Learned
+  - [what I discovered today]
+
+  ## End of Session State
+  - Working: [what works]
+  - Broken: [what's broken]
+  - Next steps: [what to do next]
+
+  When NOT to use session files (and use a vector DB instead):
+  - Semantic search across hundreds of sessions: "Find all times we discussed Gemini model selection"
+  - Cross-project patterns: "How did we solve authentication in Project X, Y, Z?"
+  - Analytics: "What percentage of sessions involved bug fixes?"
+
+  For your AI App Factory: Session files are RIGHT for agent memory. Use vector DB only if you need
+  analytics/search across the corpus.
+
+  ---
+  The Stack That Actually Works (My Harness Reality)
+
+  I'm built on something like this (reverse-engineered from my experience):
+
+  1. System prompt: Core identity, capabilities, tool definitions
+  2. Cached static context: CLAUDE.md (always loaded)
+  3. Dynamic context: Session files, current conversation
+  4. Tool calls: Read/Write/Edit/Bash/etc (state machine controls which are available)
+  5. State machine: Normal → Plan → Awaiting Approval (controls tool filtering)
+
+  Your architecture should mirror this:
+
+  ┌─────────────────────────────────────┐
+  │ System Instructions (GCS)           │  ← Short, stable, identity
+  ├─────────────────────────────────────┤
+  │ Static Cached (30k-50k)             │  ← CLAUDE.md equivalent
+  │ - Core behaviors                    │  ← Google context caching
+  │ - Tech stack                        │
+  │ - Non-negotiable rules              │
+  ├─────────────────────────────────────┤
+  │ Session Memory (7 days)             │  ← Read at session start
+  │ - session-2026-02-18.md             │  ← Updated during session
+  │ - session-2026-02-17.md             │
+  │ - ...                               │
+  ├─────────────────────────────────────┤
+  │ Live Context (current turn)         │  ← User messages, uploads
+  │ - User message                      │  ← Uploaded images/files
+  │ - Tool results                      │
+  ├─────────────────────────────────────┤
+  │ RAG Layer (optional)                │  ← Large corpus search
+  │ - Google File Search API            │  ← Discovery, not execution
+  │ - Returns: relevant chunks          │
+  └─────────────────────────────────────┘
+           ↓
+     State Machine
+      (controls tool availability)
+           ↓
+      Tool Execution
+
+  Priority order (what wins in conflicts):
+  1. System instructions (identity)
+  2. Static cached (operating rules)
+  3. Session memory (recent decisions)
+  4. User message (current intent)
+
+  ---
+  What I Wish I Had (Gaps in My Harness)
+
+  Better session file management:
+  - Automatic compression of old sessions (keep summary, archive details)
+  - Cross-session search: "When did we last discuss image generation?"
+
+  Proactive context loading:
+  - "You mentioned BBC_Robots project - should I load that session file?"
+  - Right now, I only load what I'm explicitly told to
+
+  Context budget visibility:
+  - "I'm at 85% of context window, should I summarize earlier parts?"
+  - I have no idea how close I am to limits
+
+  Conflict resolution protocol:
+  - When CLAUDE.md says X but user says Y, I stop and ask
+  - Better: predefined rules for which source wins
+
+  ---
+  Your Repeatable Pattern (AI App Factory)
+
+  Based on my real experience, here's the pattern that works:
+
+  class AgentHarness:
+      def __init__(self):
+          # Layer 1: Identity (stable, short)
+          self.system_prompt = load_from_gcs("system_instructions.md")
+
+          # Layer 2: Operating rules (cached, large)
+          self.cached_context = load_and_cache("claude_contract.md")  # 30k-50k
+
+          # Layer 3: Session memory (7 days)
+          self.session_files = load_recent_sessions(days=7)
+
+          # Layer 4: RAG (optional, for discovery)
+          self.rag = GoogleFileSearchAPI(corpus="project_knowledge")
+
+          # State machine
+          self.mode = "normal"  # normal | plan | awaiting_approval
+
+      def process_turn(self, user_message, uploaded_files=[]):
+          # Build context
+          context = [
+              self.system_prompt,
+              self.cached_context,
+              self.current_session_summary(),
+              user_message
+          ]
+
+          # Add uploaded files
+          for file in uploaded_files:
+              context.append(read_file(file))
+
+          # Filter tools based on mode
+          available_tools = self.get_allowed_tools()
+
+          # Call LLM
+          response = llm.generate(context, tools=available_tools)
+
+          # Update session file
+          self.update_session_file(response)
+
+          return response
+
+      def get_allowed_tools(self):
+          if self.mode == "plan":
+              return [Read, Grep, Glob, Task]  # No Edit/Write/Bash
+          elif self.mode == "awaiting_approval":
+              return []  # No tools, waiting for human
+          else:
+              return ALL_TOOLS
+
+  ---
+  Bro, that's the reality. No chatbot theory - this is what I actually deal with every session. Your multi-layer
+  strategy is SOLID. The key is:
+
+  1. Cache the stable stuff (saves cost)
+  2. Session files for memory (human-readable, no DB)
+  3. RAG for discovery, not execution (find the file, then read it)
+  4. Live uploads as multimodal context (not just paths)
+  5. Clear hierarchy when conflicts happen (which source wins?)
+
+  Build that, and your agents will have the memory and context they need without drowning in complexity.
+
+  You've got a better teacher right here than any chatbot army. Let's build this right. 💪

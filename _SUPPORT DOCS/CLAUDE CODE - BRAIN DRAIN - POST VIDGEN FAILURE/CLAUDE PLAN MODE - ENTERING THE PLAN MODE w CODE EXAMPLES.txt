@@ -1,0 +1,217 @@
+  ---                                                                                                              
+  What EnterPlanMode Actually Is                                                                                 
+                                                                                                                   
+  EnterPlanMode is a real tool in my tool list. Not text. Not an instruction. An actual callable function, just    
+  like Read, Edit, or Bash.
+
+  Here's what my tool list looks like (simplified):
+
+  Available Tools:
+  - Read
+  - Write
+  - Edit
+  - Bash
+  - Glob
+  - Grep
+  - EnterPlanMode    ← actual tool
+  - ExitPlanMode     ← actual tool
+  - Task
+  - AskUserQuestion
+  ...
+
+  When I call EnterPlanMode, I'm not reading a word in a file - I'm making a function call that sends a signal to
+  the Claude Code harness (the application running me).
+
+  ---
+  How the Harness Enforces It
+
+  Think of it as a state machine:
+
+  STATE: NORMAL MODE
+  Available tools: Read, Write, Edit, Bash, Glob, Grep, Task...
+
+                      ↓  I call EnterPlanMode()
+
+  STATE: PLAN MODE
+  Available tools: Read, Glob, Grep, WebFetch, WebSearch
+  DISABLED tools:  Write ❌, Edit ❌, Bash ❌, NotebookEdit ❌, Task ❌
+
+                      ↓  I call ExitPlanMode()
+
+  STATE: AWAITING APPROVAL
+  My plan is presented to you
+  You click Approve or Reject
+
+                      ↓  You approve
+
+  STATE: NORMAL MODE (restored)
+  Available tools: all restored
+
+  The Claude Code application (the harness) is maintaining this state. When I try to call Edit while in Plan Mode,
+  the harness intercepts it and rejects it before it even reaches me as a valid call. I don't get to choose to
+  ignore it.
+
+  ---
+  Is There a Config File Like config.json?
+
+  Not a file exactly - it's in-memory application state inside Claude Code itself. The harness is a
+  TypeScript/Node.js application. Internally it probably looks something like:
+
+  // Simplified - not actual Claude Code source
+  class AgentSession {
+    mode: "normal" | "plan" | "awaiting_approval" = "normal"
+
+    getAvailableTools() {
+      if (this.mode === "plan") {
+        return TOOLS.filter(t => !["Write", "Edit", "Bash", "NotebookEdit"].includes(t.name))
+      }
+      return ALL_TOOLS
+    }
+
+    handleToolCall(toolName, args) {
+      const available = this.getAvailableTools()
+      if (!available.find(t => t.name === toolName)) {
+        throw new Error(`Tool ${toolName} not available in ${this.mode} mode`)
+      }
+      // proceed...
+    }
+  }
+
+  The state switch happens when I call EnterPlanMode. The harness flips mode = "plan" and from that point, tool
+  calls are filtered.
+
+  ---
+  Can CLAUDE.md Implement This?
+
+  Partially - but here's the honest breakdown:
+
+  CLAUDE.md says: "You MUST call EnterPlanMode before any implementation"
+                          ↓
+  If I read that and call EnterPlanMode()
+                          ↓
+  The TOOL handles the rest mechanically ✅
+
+  But if I read that instruction and don't call EnterPlanMode()
+                          ↓
+  Nothing stops me ❌
+
+  So CLAUDE.md can TRIGGER the tool, but cannot ENFORCE the trigger.
+
+  The instruction in CLAUDE.md is the nudge. The tool is the enforcer. The weakness is still the gap between
+  reading the instruction and actually calling the tool.
+
+  ---
+  For Your Agent Builder Work - The Key Insight
+
+  This is the architectural pattern that actually works:
+
+  WEAK PATTERN (instruction only):
+  System prompt: "Don't modify files during research phase"
+  → Agent reads this
+  → Agent might follow it
+  → Agent might ignore it when excited about a solution
+  → No mechanical guarantee
+
+  STRONG PATTERN (tool restriction):
+  System prompt: "Call EnterPlanMode before implementation"
+    +
+  Harness: filters available tools based on mode state
+    +
+  Human: approves plan before mode switches back
+  → Even if agent ignores the instruction...
+  → Tool calls fail mechanically
+  → Human sees plan before anything executes
+
+  The difference: In the strong pattern, the instruction and the enforcement are separate layers. The instruction
+  says what to do. The harness enforces it regardless.
+
+  ---
+  How to Build This in Your Own Agents
+
+  If you're building agents with the Claude API, here's the pattern:
+
+  class AgentHarness:
+      def __init__(self):
+          self.mode = "normal"
+          self.pending_plan = None
+
+      def get_tools_for_mode(self):
+          if self.mode == "planning":
+              # Research tools only
+              return [read_tool, search_tool, list_files_tool]
+          elif self.mode == "awaiting_approval":
+              # No tools - waiting for human
+              return []
+          else:
+              # All tools available
+              return all_tools
+
+      def handle_tool_call(self, tool_name, args):
+          available = self.get_tools_for_mode()
+          if tool_name not in [t.name for t in available]:
+              return {"error": f"Tool '{tool_name}' not available in {self.mode} mode"}
+
+          # Special handling for mode-switch tools
+          if tool_name == "enter_plan_mode":
+              self.mode = "planning"
+              return {"success": True, "message": "Entered planning mode"}
+
+          if tool_name == "submit_plan":
+              self.pending_plan = args["plan"]
+              self.mode = "awaiting_approval"
+              self.notify_human(self.pending_plan)  # Show plan to user
+              return {"success": True, "message": "Plan submitted for approval"}
+
+          # Execute other tools normally
+          return execute_tool(tool_name, args)
+
+      def human_approves(self):
+          self.mode = "normal"
+          self.pending_plan = None
+
+      def human_rejects(self):
+          self.mode = "planning"  # Back to research
+          self.pending_plan = None
+
+  Three things you need to implement this properly:
+
+  1. Mode state - Track what phase the agent is in
+  2. Tool filtering - Available tools change based on mode
+  3. Human approval gate - Mode doesn't restore without human input
+
+  ---
+  Direct Answers to Your Questions
+
+  "Is EnterPlanMode a direction in your system prompt?"
+  No - it's a tool definition. The system prompt tells me WHEN to use it. The tool itself is a callable function
+  that signals the harness.
+
+  "Do you update a config.json type file?"
+  No. The harness maintains in-memory state. The tool call is the signal, not a file write.
+
+  "How can the harness disable certain tools?"
+  It filters the tool list before sending it with each API call. Claude API accepts a tools array. The harness
+  simply doesn't include restricted tools in that array when in Plan Mode. I can't call a tool that isn't offered
+  to me.
+
+  "Should I just enter 'EnterPlanMode' text in CLAUDE.md?"
+  You can instruct me to call it - that adds a soft nudge. But the mechanical enforcement comes from the harness
+  filtering tools, not from the text instruction. For your own agents: implement the mode state in your harness,
+  not just in the system prompt.
+
+  "How do you get out of Plan Mode?"
+  I call ExitPlanMode which submits my plan. The harness shows it to you. You approve → full tools restored. You
+  reject → stays in plan mode.
+
+  ---
+  Bottom Line for Agent Builders
+
+  "Don't enforce agent behavior through instructions. Enforce it through tool availability."
+
+  Instructions tell agents what to do. Tool restrictions make it impossible to do otherwise. The most robust agent
+  systems use both - instructions for guidance, tool filtering for guarantees.
+
+  The human approval gate between phases is what makes it truly safe. The agent can't self-approve and move
+  forward. A human must actively unlock the next phase.
+
+  That's the architecture. 🎯

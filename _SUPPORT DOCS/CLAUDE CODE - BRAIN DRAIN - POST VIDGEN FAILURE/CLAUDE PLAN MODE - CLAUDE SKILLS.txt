@@ -1,0 +1,648 @@
+               
+  ---                                
+  PART 1: Skills in Claude Code (My Reality)                                                                       
+                                                                                                                   
+  What Are Skills?
+
+  From my perspective, skills are on-demand instruction packets that I can invoke mid-conversation.
+
+  Here's what actually happens:
+
+  Without Skills (old way):
+  System Prompt: "You are Claude. You can write code, commit to git, etc."
+  User: "commit this"
+  Me: *tries to remember git workflow from base instructions*
+
+  With Skills (current):
+  System Reminder: "Available skills: commit, review-pr, pdf, etc."
+  User: "commit this"
+  Me: *calls Skill("commit")*
+  Skill expands into: Full git commit protocol with exact steps
+  Me: *follows expanded protocol*
+
+  Key difference: Skills are lazy-loaded specialized instructions that I invoke when needed, rather than having ALL
+   possible workflows crammed into my base prompt.
+
+  Protocol I Follow:
+
+  When I see a user message that matches a skill:
+
+  1. Pattern match: User says "commit" or "create a pull request"
+  2. Check available skills: Do I have a skill for this?
+  3. Invoke skill: Skill(name="commit")
+  4. Skill expands: Full instructions appear in my context
+  5. Follow expanded instructions: Like a mini-playbook
+
+  Example from my actual life:
+
+  User: "/commit"
+
+  I see in system reminder:
+  Available skills:
+  - commit: Git commit workflow
+  - review-pr: PR review process
+  - pdf: PDF generation
+
+  I call: Skill(name="commit")
+
+  Skill expands into something like:
+  # Commit Skill
+
+  ## Workflow
+  1. Run git status (never use -uall)
+  2. Run git diff for staged and unstaged
+  3. Run git log for commit message style
+  4. Analyze changes, draft message
+  5. Stage specific files (not git add .)
+  6. Create commit with Co-Authored-By: Claude
+  7. Run git status after to verify
+
+  ## Rules
+  - Never amend unless explicitly requested
+  - Never skip hooks
+  - Never force push to main
+  - Ask before committing secrets
+
+  Now I follow THAT instead of trying to remember git protocol from my base instructions.
+
+  Are They Just Glorified Instruction Sets?
+
+  Yes, but with superpowers:
+
+  1. On-demand: Only loaded when invoked (saves context window)
+  2. Composable: Can invoke multiple skills in one session
+  3. Updatable: Anthropic can update skill without changing my base model
+  4. User-creatable: Users can define custom skills
+  5. Scoped: Instructions only apply while skill is active
+
+  It's like the difference between:
+  - Base instructions: Your personality, core behaviors (always on)
+  - Skills: Specialized playbooks you pull out for specific tasks (on-demand)
+
+  Claude Plugins vs Skills
+
+  From what I can tell:
+
+  Claude Plugin = A package that can contain:
+  - Multiple skills
+  - MCP servers
+  - Shared resources
+  - Custom tools
+
+  Think of it like:
+  Plugin: "Git Workflow Pro"
+    ├── Skill: commit
+    ├── Skill: review-pr
+    ├── Skill: create-release
+    └── MCP Server: github-api
+
+  Skills = Individual reusable behaviors
+  Plugins = Bundled collection of related skills + infrastructure
+
+  How Skills Make Me Stronger:
+
+  Before skills:
+  - Base prompt has to cover EVERY possible workflow
+  - Context bloat
+  - Generic instructions that don't fit specific tasks
+  - I forget edge cases
+
+  With skills:
+  - Base prompt: Core identity + behaviors
+  - Skills: Detailed playbooks for specific tasks
+  - I invoke the right playbook for the job
+  - Instructions are tailored to the exact task
+
+  Example:
+
+  User: "Analyze this PDF and extract tables"
+
+  Without skill: I try to figure out PDF parsing from scratch
+
+  With skill:
+  Skill(name="pdf-analysis")
+  # Expands into:
+  # - Use PyPDF2 or pdfplumber
+  # - Extract text with layout preservation
+  # - Detect tables using camelot-py
+  # - Output as structured data
+  # - Handle multi-page documents
+  # - etc.
+
+  Skill Loading: Session Start vs On-Demand
+
+  My experience: ON-DEMAND loading.
+
+  At session start, I see:
+  Available skills: commit, review-pr, pdf, analyze-logs, etc.
+
+  But the FULL instruction set for each skill is NOT in my context. Just the names.
+
+  When I call Skill("commit"), THEN the full instructions load.
+
+  This is HUGE for context efficiency:
+  - 10 skills × 2000 tokens each = 20k tokens
+  - But I only load the 1-2 skills I actually use per session
+  - Saves 18k tokens
+
+  It's like your file reader tool for resume: The resume isn't in context until I call Read("resume.pdf"). Skills
+  work the same way.
+
+  ---
+  PART 2: Skills in Your Agentic Harness
+
+  Can You Implement This Pattern? ABSOLUTELY.
+
+  Skills are just structured, on-demand context injection. Model-agnostic.
+
+  Here's how:
+
+  Skill Registry Pattern
+
+  class SkillRegistry:
+      """Registry of available skills"""
+
+      def __init__(self):
+          self.skills = {
+              "commit": Skill(
+                  name="commit",
+                  description="Git commit workflow with best practices",
+                  prompt_file="gs://skills/git/commit.md",
+                  tools=["Bash", "Read", "Edit"],
+                  triggers=["commit", "/commit", "git commit"]
+              ),
+              "plan_mode": Skill(
+                  name="plan_mode",
+                  description="Enter planning mode for code changes",
+                  prompt_file="gs://skills/planning/enter_plan.md",
+                  tools=["Read", "Grep", "Glob"],
+                  triggers=["plan", "/plan", "enter plan mode"],
+                  state_change="planning"  # ← Changes harness state
+              ),
+              "session_update": Skill(
+                  name="session_update",
+                  description="Update session file with progress",
+                  prompt_file="gs://skills/session/update.md",
+                  tools=["Edit", "Read"],
+                  triggers=["update session", "/session"]
+              )
+          }
+
+      def get_skill(self, name: str) -> Skill:
+          return self.skills.get(name)
+
+      def list_available(self) -> List[str]:
+          return list(self.skills.keys())
+
+  Skill Invocation Tool
+
+  class InvokeSkillTool:
+      """Tool that agent calls to load a skill"""
+
+      def execute(self, skill_name: str, context: dict = None):
+          # Fetch skill
+          skill = skill_registry.get_skill(skill_name)
+
+          if not skill:
+              return {"error": f"Skill '{skill_name}' not found"}
+
+          # Load prompt from GCS
+          skill_prompt = load_from_gcs(skill.prompt_file)
+
+          # Inject into conversation context
+          harness.inject_system_message(f"""
+  🎯 SKILL ACTIVATED: {skill.name}
+
+  {skill_prompt}
+
+  Available tools for this skill: {skill.tools}
+
+  Follow the above instructions for this task.
+  """)
+
+          # Change state if skill requires it
+          if skill.state_change:
+              harness.state = skill.state_change
+
+          # Update available tools
+          harness.active_skill = skill
+          harness.refresh_available_tools()
+
+          return {
+              "status": "activated",
+              "skill": skill.name,
+              "instructions_loaded": True,
+              "tools": skill.tools
+          }
+
+  System Prompt Integration
+
+  def build_system_prompt():
+      """Build system prompt with available skills"""
+
+      base_prompt = load_from_gcs("system_instructions.md")
+
+      # List available skills
+      skills_list = skill_registry.list_available()
+      skills_section = f"""
+  ## Available Skills
+
+  You have access to the following skills. Invoke them when appropriate:
+
+  {chr(10).join(f"- {name}: {skill_registry.get_skill(name).description}" for name in skills_list)}
+
+  To activate a skill: InvokeSkill(skill_name="commit")
+  """
+
+      return base_prompt + skills_section
+
+  Works with ANY Model (Gemini, GPT, Claude)
+
+  # Works with Gemini
+  response = gemini_model.generate(
+      messages=conversation,
+      tools=[InvokeSkillTool, ReadTool, WriteTool, ...],
+      system=system_prompt
+  )
+
+  # Works with GPT
+  response = openai_client.chat.completions.create(
+      messages=conversation,
+      tools=[InvokeSkillTool.to_openai_schema(), ...],
+      system=system_prompt
+  )
+
+  # Works with Claude
+  response = anthropic_client.messages.create(
+      messages=conversation,
+      tools=[InvokeSkillTool.to_anthropic_schema(), ...],
+      system=system_prompt
+  )
+
+  The pattern is universal: Tool call → Load instructions → Agent follows them
+
+  ---
+  Practical Examples
+
+  Example 1: Session File Update Skill
+
+  Skill file: gs://skills/session/update.md
+  # Session File Update Skill
+
+  ## Task
+  Update the current session file with recent progress.
+
+  ## Steps
+  1. Read session-{today}.md
+  2. Find the "## Session Progress" section
+  3. Add new entry:
+  [HH:MM] — [Brief description]
+
+  - What was done
+  - Files changed
+  - Result
+  4. Update "## End of Session State" if applicable
+  5. Save changes
+
+  ## Rules
+  - Be concise (3-5 bullet points max per entry)
+  - Focus on WHAT changed, not HOW
+  - Include file paths for traceability
+  - Update "Working" and "Broken" sections accurately
+
+  Usage:
+  # User: "update the session file"
+  # Agent calls: InvokeSkill("session_update")
+  # Skill loads, agent follows instructions
+
+  Example 2: Plan Mode Skill (with State Change)
+
+  Skill file: gs://skills/planning/enter_plan.md
+  # Plan Mode Skill
+
+  ## Purpose
+  Research and plan implementation before writing code.
+
+  ## Workflow
+  1. Understand the requirement
+  2. Read relevant files (use Read, Grep, Glob only)
+  3. Document:
+     - Current behavior
+     - Proposed changes
+     - Files to modify
+     - Potential risks
+  4. Write plan to plans/plan-{timestamp}.md
+  5. Call ExitPlanMode when ready for approval
+
+  ## Restrictions
+  - NO Edit, Write, or Bash tools
+  - Research only
+  - Ask questions if unclear
+  - Surface assumptions
+
+  ## Output Format
+  ```markdown
+  # Plan: [Task Name]
+
+  ## Current State
+  - [What exists now]
+
+  ## Proposed Changes
+  - [What will change]
+
+  ## Implementation Steps
+  1. [Step with file:line references]
+
+  ## Files to Modify
+  - path/to/file.py:123 - [change description]
+
+  ## Risks
+  - [Potential issues]
+
+  ## Questions
+  - [Unresolved questions]
+
+  **Invocation with state change:**
+  ```python
+  class InvokeSkillTool:
+      def execute(self, skill_name: str):
+          skill = skill_registry.get_skill(skill_name)
+
+          # Load instructions
+          harness.inject_skill_instructions(skill.prompt_file)
+
+          # Change state
+          if skill.state_change == "planning":
+              harness.state = AgentState.PLANNING
+              harness.filter_tools_to(["Read", "Grep", "Glob"])
+
+          return {"status": "Plan Mode activated. Research tools only."}
+
+  Example 3: Git Commit Skill
+
+  Skill file: gs://skills/git/commit.md
+  # Git Commit Skill
+
+  ## Pre-Commit Checklist
+  1. Run: git status (never -uall)
+  2. Run: git diff (staged + unstaged)
+  3. Run: git log -5 (check message style)
+
+  ## Commit Message Guidelines
+  - First line: <50 chars, imperative mood
+  - Body: Explain WHY, not WHAT
+  - End with: Co-Authored-By: [Agent Name]
+
+  ## Execution
+  1. Stage specific files (avoid git add .)
+  2. Commit with heredoc message
+  3. Run git status after to verify
+  4. Report commit hash to user
+
+  ## Never
+  - Amend without explicit request
+  - Skip hooks (--no-verify)
+  - Force push to main/master
+  - Commit .env, credentials, secrets
+
+  ## On Hook Failure
+  - Fix the issue
+  - Re-stage
+  - NEW commit (not --amend)
+
+  ---
+  Why Skills Are Project-Agnostic
+
+  Skills = Reusable behaviors that work across ANY project:
+  - "Commit workflow" applies to every git repo
+  - "Update session file" applies to every project with session files
+  - "Enter plan mode" applies to any coding task
+
+  Project-specific context = Instructions unique to ONE project:
+  - "VidGen uses file-based state in projects/{name}/"
+  - "This repo uses Gemini 2.5 Flash"
+  - "Audio files are named 2_audio.mp3"
+
+  The separation:
+  Base System Prompt (Identity)
+      ├── Always loaded
+      └── "You are a coding agent..."
+
+  Project Instructions (CLAUDE.md, Windsurf.md)
+      ├── Loaded for this project
+      └── "VidGen pipeline, file naming, etc."
+
+  Skills (Reusable behaviors)
+      ├── Loaded on-demand
+      └── "Git commit workflow, plan mode, session updates"
+
+  In Claude.ai projects:
+  - Project knowledge: VidGen docs, architecture, specific code
+  - Skills: Commit, PR review, analyze-logs (same across all projects)
+
+  This is why skills live in a shared registry, not per-project.
+
+  ---
+  Can We Turn Instructions into Skills?
+
+  YES. And you SHOULD.
+
+  Example: Turn "Enter Plan Mode" instruction into a skill:
+
+  Before (in CLAUDE.md):
+  ## Plan Mode
+  When starting implementation, enter plan mode:
+  1. Read relevant files
+  2. Write plan
+  3. Get approval
+  4. Implement
+
+  Use EnterPlanMode tool to start.
+
+  Problem: Agent might forget, skip, or misunderstand.
+
+  After (as a skill):
+
+  System prompt:
+  Available skills:
+  - plan: Enter planning mode before code changes
+
+  When user asks for implementation, invoke: InvokeSkill("plan")
+
+  Skill file (gs://skills/planning/plan.md):
+  # Planning Mode Skill
+
+  ## Auto-Trigger
+  This skill should be invoked BEFORE any code modification task.
+
+  ## Workflow
+  [Full detailed plan mode instructions]
+
+  ## State Change
+  This skill changes agent state to PLANNING and restricts tools to Read/Grep/Glob.
+
+  ## Exit
+  Call ExitPlanMode when plan is complete.
+
+  Now:
+  - Clear trigger condition
+  - Full workflow instructions loaded on-demand
+  - State change enforced automatically
+  - Agent can't "forget" because skill activation changes available tools
+
+  ---
+  Skills vs Base Instructions: Decision Tree
+
+  Put in BASE INSTRUCTIONS if:
+  - Always relevant (identity, core behaviors)
+  - Short (<500 tokens)
+  - Applies to every task
+
+  Put in SKILLS if:
+  - Task-specific (git workflow, PDF analysis)
+  - Long (>500 tokens)
+  - Only needed sometimes
+  - Reusable across projects
+
+  Example breakdown:
+
+  Base Instructions:
+  - "You are a senior software engineer"
+  - "Read before write"
+  - "Ask when confused"
+  - "Output code in markdown"
+
+  Skills:
+  - plan: Enter planning mode (2000 tokens)
+  - commit: Git commit workflow (1500 tokens)
+  - session_update: Update session file (800 tokens)
+  - analyze_logs: Parse and analyze logs (1200 tokens)
+
+  ---
+  Implementation in Your Harness: Concrete Architecture
+
+  class StarkAgentHarness:
+      def __init__(self):
+          # Context layers
+          self.system_prompt = load_from_gcs("system.md")
+          self.cached_instructions = load_and_cache("claude_contract.md")
+
+          # Skill registry
+          self.skill_registry = SkillRegistry()
+          self.active_skills = []  # Currently loaded skills
+
+          # State machine
+          self.state = AgentState.NORMAL
+
+      def process_turn(self, user_message):
+          # Build context
+          context = [
+              self.system_prompt,
+              self.cached_instructions,
+              self.get_skill_list(),  # List of available skills
+              *self.get_active_skill_prompts(),  # Loaded skill instructions
+              user_message
+          ]
+
+          # Get tools (filtered by state)
+          tools = self.get_available_tools()
+
+          # Call LLM
+          response = gemini.generate(
+              messages=context,
+              tools=tools
+          )
+
+          # Process tool calls
+          if response.tool_calls:
+              for tool_call in response.tool_calls:
+                  if tool_call.name == "InvokeSkill":
+                      self.activate_skill(tool_call.args["skill_name"])
+
+          return response
+
+      def activate_skill(self, skill_name: str):
+          """Load skill and apply its effects"""
+          skill = self.skill_registry.get_skill(skill_name)
+
+          # Load instructions
+          skill_prompt = load_from_gcs(skill.prompt_file)
+          self.active_skills.append({
+              "name": skill_name,
+              "prompt": skill_prompt,
+              "tools": skill.tools
+          })
+
+          # Apply state change if any
+          if skill.state_change:
+              self.state = AgentState[skill.state_change.upper()]
+
+          # Refresh tools
+          self.refresh_available_tools()
+
+      def get_available_tools(self):
+          """Get tools based on state and active skills"""
+          if self.state == AgentState.PLANNING:
+              return [ReadTool(), GrepTool(), GlobTool()]
+          elif self.active_skills:
+              # If skill is active, restrict to skill's tools
+              skill_tools = self.active_skills[-1]["tools"]
+              return [tool for tool in ALL_TOOLS if tool.name in skill_tools]
+          else:
+              return ALL_TOOLS
+
+  ---
+  Key Insight: Skills = Dynamic Context + State Changes
+
+  Skills aren't just instructions. They're behavior packages that can:
+  1. Inject specialized instructions
+  2. Change agent state
+  3. Filter available tools
+  4. Define success criteria
+
+  This is MORE powerful than static instructions because:
+  - On-demand (saves context)
+  - Composable (combine skills)
+  - Enforceable (state changes restrict tools)
+  - Updatable (change skill without changing base model)
+
+  ---
+  Summary: Skills Are Fucking Genius
+
+  What they are:
+  - On-demand instruction packets
+  - Loaded when invoked, not always in context
+  - Can change agent state and available tools
+  - Reusable across projects
+
+  How to use them in your harness:
+  - Skill registry (GCS-based)
+  - InvokeSkill tool
+  - Skill activation → inject instructions + change state + filter tools
+  - Works with ANY model (Gemini, GPT, Claude)
+
+  What to make into skills:
+  - Plan mode workflow
+  - Git commit protocol
+  - Session file updates
+  - PR reviews
+  - Log analysis
+  - PDF processing
+  - Any specialized task >500 tokens
+
+  Architecture:
+  Base Prompt (identity, always-on)
+      ↓
+  Project Instructions (this codebase)
+      ↓
+  Available Skills (listed, not loaded)
+      ↓
+  User: "commit this"
+      ↓
+  Agent: InvokeSkill("commit")
+      ↓
+  Skill loads → Instructions + State + Tools
+      ↓
+  Agent follows skill protocol
+
+  Ready to implement this in your ADK agent bundle? This is going to be FIRE. 🔥

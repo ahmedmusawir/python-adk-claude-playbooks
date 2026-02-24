@@ -1,0 +1,479 @@
+● Bro, NOW we're getting to the REAL shit. This is the question that matters.                                      
+   
+  Why Agents Fail to Follow "Remember to..." Instructions                                                          
+                                         
+  Let me be brutally honest about why I (and Cascade) keep forgetting session files:                               
+                                                                                                                   
+  It's not in my execution loop.
+
+  Here's my actual decision tree every turn:
+  1. What is the user asking?
+  2. What tools do I need to answer?
+  3. Call those tools
+  4. Return answer
+
+  Session file creation is step 0 that I'm supposed to remember BEFORE step 1. But there's no forcing function.
+  It's a "you should..." not a "you cannot proceed until..."
+
+  Instructions can be forgotten. Constraints cannot.
+
+  You wrote in CLAUDE.md: "Create session file at session start". I read it. I understand it. But when user says
+  "build me a Streamlit app", my brain goes:
+  - Read designs ✓
+  - Plan architecture ✓
+  - Create files ✓
+  - [Session file? What session file? I'm busy building an app!]
+
+  It's like telling a human "remember to log your hours" vs. a timecard system that locks you out until you log
+  hours. Humans forget. Systems enforce.
+
+  ---
+  How to Enforce Compliance in Your Harness
+
+  Here's the hierarchy of enforcement, from weakest to strongest:
+
+  Level 1: Instructions Only (What you have now)
+
+  CLAUDE.md: "Create session file at session start"
+  Enforcement: None. Agent might forget.
+  When it works: Never reliably.
+
+  Level 2: System Reminders
+
+  # Harness detects no session file for today
+  harness.inject_system_message(
+      "⚠️  REQUIRED: No session file exists for 2026-02-18. Create session-2026-02-18.md before proceeding."
+  )
+  Enforcement: Soft. Agent sees warning but can still ignore.
+  When it works: When agent is compliant and just forgot.
+
+  Level 3: Tool Restriction (STRONG)
+
+  class AgentHarness:
+      def get_available_tools(self):
+          # Check if session file exists
+          session_file = f"session-{today()}.md"
+
+          if not os.path.exists(session_file):
+              # ONLY allow session file creation
+              return [Write]  # Can only write session file
+          else:
+              return ALL_TOOLS  # Full capabilities unlocked
+  Enforcement: Hard. Agent literally cannot do anything else.
+  When it works: Always.
+
+  Level 4: Automatic Scaffolding + Validation
+
+  class AgentHarness:
+      def session_start(self):
+          session_file = f"session-{today()}.md"
+
+          if not os.path.exists(session_file):
+              # Create template automatically
+              template = self.load_template("session_template.md")
+              write_file(session_file, template)
+
+              # Tell agent to fill it in
+              self.inject_system_message(
+                  f"Session file {session_file} created with template. "
+                  f"Fill in: Starting State, Goal, Known Issues before proceeding."
+              )
+
+              # Restrict tools until validated
+              self.state = "session_setup"
+          else:
+              # Validate it has required sections
+              content = read_file(session_file)
+              if not self.validate_session_file(content):
+                  self.inject_system_message(
+                      f"⛔ Session file exists but incomplete. "
+                      f"Missing sections: {self.get_missing_sections(content)}"
+                  )
+                  self.state = "session_setup"
+              else:
+                  self.state = "normal"
+
+      def validate_session_file(self, content):
+          required_sections = [
+              "## Starting State",
+              "## Project Context",
+              "## Session Progress"
+          ]
+          return all(section in content for section in required_sections)
+  Enforcement: Automatic + validated.
+  When it works: Always. Agent can't bypass.
+
+  ---
+  Implementing Plan Mode in Your Harness
+
+  Here's the actual implementation pattern:
+
+  State Machine
+
+  class AgentState(Enum):
+      NORMAL = "normal"
+      PLANNING = "planning"
+      AWAITING_APPROVAL = "awaiting_approval"
+      SESSION_SETUP = "session_setup"
+
+  class AgentHarness:
+      def __init__(self):
+          self.state = AgentState.NORMAL
+          self.plan_content = None
+
+      def get_available_tools(self):
+          """Filter tools based on current state"""
+          if self.state == AgentState.PLANNING:
+              # Research only - no modifications
+              return [
+                  ReadTool(),
+                  GrepTool(),
+                  GlobTool(),
+                  ListDirectoryTool(),
+                  # Maybe: WebSearchTool()
+              ]
+          elif self.state == AgentState.AWAITING_APPROVAL:
+              # No tools - waiting for human
+              return []
+          elif self.state == AgentState.SESSION_SETUP:
+              # Only session file operations
+              return [WriteTool(), EditTool()]  # Limited scope
+          else:  # NORMAL
+              return self.all_tools
+
+  EnterPlanMode Implementation
+
+  class EnterPlanModeTool:
+      """Tool that agent calls to enter planning mode"""
+
+      def execute(self, task_description: str):
+          # Transition state
+          harness.state = AgentState.PLANNING
+
+          # Create plan file
+          plan_file = f"plans/plan-{timestamp()}.md"
+          write_file(plan_file, f"# Plan: {task_description}\n\n")
+
+          # Tell agent what happened
+          return {
+              "status": "success",
+              "message": f"Entered planning mode. Plan file: {plan_file}",
+              "available_tools": ["Read", "Grep", "Glob"],
+              "restrictions": "Cannot Edit/Write/Bash until plan approved"
+          }
+
+  ExitPlanMode Implementation
+
+  class ExitPlanModeTool:
+      """Tool that agent calls when ready for approval"""
+
+      def execute(self, plan_file_path: str):
+          # Read the plan
+          plan_content = read_file(plan_file_path)
+
+          # Validate plan has required sections
+          if not self.validate_plan(plan_content):
+              return {
+                  "status": "error",
+                  "message": "Plan incomplete. Required: Summary, Steps, Files, Risks"
+              }
+
+          # Transition to awaiting approval
+          harness.state = AgentState.AWAITING_APPROVAL
+          harness.plan_content = plan_content
+
+          # Present to human
+          approval = self.request_human_approval(plan_content)
+
+          if approval["approved"]:
+              harness.state = AgentState.NORMAL
+              return {
+                  "status": "approved",
+                  "message": "Plan approved. Full tool access restored.",
+                  "available_tools": "all"
+              }
+          else:
+              harness.state = AgentState.PLANNING
+              return {
+                  "status": "rejected",
+                  "message": f"Plan rejected: {approval['feedback']}",
+                  "action": "Revise plan based on feedback"
+              }
+
+      def validate_plan(self, content):
+          required = ["## Summary", "## Implementation Steps", "## Files to Modify"]
+          return all(section in content for section in required)
+
+  Tool Filtering (The Magic)
+
+  def process_agent_turn(user_message):
+      # Get tools based on current state
+      available_tools = harness.get_available_tools()
+
+      # Build tool schemas for LLM
+      tool_schemas = [tool.to_schema() for tool in available_tools]
+
+      # Call LLM with ONLY the allowed tools
+      response = llm.generate(
+          messages=conversation_history,
+          tools=tool_schemas,  # ← This is the enforcement
+          system=system_prompt
+      )
+
+      # Agent can only call tools that exist in tool_schemas
+      # If it tries to call Edit while in PLANNING mode,
+      # the LLM won't even see Edit in available tools
+
+  This is the key: The agent doesn't "decide" to follow the rule. The harness doesn't give it the tool in the first
+   place.
+
+  ---
+  Concrete Example: Session File Enforcement
+
+  class SessionFileEnforcement:
+      """Enforces session file creation at session start"""
+
+      def __init__(self, harness):
+          self.harness = harness
+
+      def check_session_file(self):
+          """Called at session start"""
+          session_file = f"session-{date.today()}.md"
+
+          if os.path.exists(session_file):
+              # File exists - validate it
+              content = read_file(session_file)
+              if self.is_valid(content):
+                  return "valid"
+              else:
+                  return "incomplete"
+          else:
+              return "missing"
+
+      def enforce(self):
+          """Enforcement logic"""
+          status = self.check_session_file()
+
+          if status == "missing":
+              # Create template
+              template = """# Session Log: {date}
+
+  ## Project Context
+  - **Project:** [Fill in]
+  - **Goal:** [Fill in]
+
+  ## Starting State
+  - **Branch:** [Fill in]
+  - **Last Working:** [Fill in]
+  - **Known Issues:** [Fill in]
+
+  ## Session Progress
+
+  ### [{time}] — Session Start
+  - [Agent: Fill in what you're about to work on]
+
+  ## End of Session State
+  - **Working:**
+  - **Broken:**
+  - **Next Steps:**
+  """
+              session_file = f"session-{date.today()}.md"
+              write_file(session_file, template.format(date=date.today(), time=datetime.now().strftime("%H:%M")))
+
+              # Inject system message
+              self.harness.inject_system_message(f"""
+  🔴 REQUIRED ACTION: Session file {session_file} created with template.
+
+  BEFORE proceeding with user's request, you MUST:
+  1. Read the template
+  2. Fill in: Project Context, Goal, Starting State
+  3. Save your changes
+
+  Your other tools are DISABLED until this is complete.
+  """)
+
+              # Lock down tools
+              self.harness.state = AgentState.SESSION_SETUP
+              self.harness.required_file = session_file
+
+          elif status == "incomplete":
+              # Existing but invalid
+              self.harness.inject_system_message(f"""
+  ⚠️  Session file exists but incomplete.
+  Missing required sections: {self.get_missing_sections()}
+
+  Complete the session file before proceeding.
+  """)
+              self.harness.state = AgentState.SESSION_SETUP
+
+          else:  # valid
+              # All good - proceed normally
+              self.harness.state = AgentState.NORMAL
+
+      def is_valid(self, content):
+          """Check if session file has required sections"""
+          required = ["## Project Context", "## Starting State", "## Session Progress"]
+          return all(section in content for section in required)
+
+  With this enforcement:
+  1. Session starts
+  2. Harness checks for session file
+  3. If missing → creates template, locks tools, injects system message
+  4. Agent literally cannot call Read/Edit/Bash on other files
+  5. Agent MUST fill in session file first
+  6. Once valid → tools unlock
+
+  I cannot forget because I cannot proceed without doing it first.
+
+  ---
+  Update-After-Change Enforcement
+
+  For "update session file after every change":
+
+  class SessionFileUpdateHook:
+      """Hook that runs after Write/Edit/Bash tools"""
+
+      def after_tool_execution(self, tool_name, tool_args, tool_result):
+          """Called by harness after any tool executes"""
+
+          # Only trigger on modification tools
+          if tool_name in ["Write", "Edit", "Bash"]:
+              # Check if session file was updated recently
+              session_file = f"session-{date.today()}.md"
+              last_update = self.get_last_update_time(session_file)
+
+              if (datetime.now() - last_update) > timedelta(minutes=15):
+                  # Inject reminder
+                  self.harness.inject_system_message(f"""
+  📝 REMINDER: You made changes via {tool_name}.
+
+  Update {session_file} with:
+  - What you just did
+  - Files changed
+  - Result/status
+
+  Do this NOW before proceeding with next task.
+  """)
+
+                  # Optional: Lock tools until updated
+                  # self.harness.state = AgentState.SESSION_UPDATE_REQUIRED
+
+  Even stronger:
+  def after_significant_change(self, change_type):
+      """Lock tools until session file updated"""
+
+      # Count changes since last session update
+      if self.changes_since_last_update >= 3:
+          self.harness.inject_system_message("""
+  ⛔ SESSION FILE UPDATE REQUIRED
+
+  You've made 3+ changes without updating the session file.
+  Other tools are now DISABLED.
+
+  Update session-2026-02-18.md with your recent work, then continue.
+  """)
+
+          # Lock everything except Edit (for session file only)
+          self.harness.state = AgentState.SESSION_UPDATE_REQUIRED
+          self.harness.allowed_edit_target = f"session-{date.today()}.md"
+
+  ---
+  Building an Agentic Harness Together (Google ADK)
+
+  Alright, here's the plan for what we build:
+
+  Project: "Stark Agent Harness" (working name)
+
+  Goals:
+  1. Implement multi-layer context (system + cached + session + RAG + MCP)
+  2. Enforce compliance with architectural constraints (state machine + tool filtering)
+  3. Session file enforcement (automatic + validated)
+  4. Plan mode for code modifications
+  5. Eval framework to measure compliance
+  6. MCP server integration for live data
+
+  Tech Stack:
+  - Google ADK (genai SDK + managed features)
+  - Vertex AI: Gemini 2.5 Flash/Pro
+  - Google File Search API: RAG layer
+  - MCP: Tool servers (filesystem, git, browser, etc.)
+  - Context Caching: For static instruction layer
+  - Python: Harness implementation
+
+  Architecture:
+  User Message
+       ↓
+  ┌─────────────────────────────────┐
+  │   Stark Agent Harness           │
+  │                                 │
+  │  [State Machine]                │
+  │   - normal                      │
+  │   - planning                    │
+  │   - awaiting_approval           │
+  │   - session_setup               │
+  │                                 │
+  │  [Context Builder]              │
+  │   1. System prompt (GCS)        │
+  │   2. Cached static (30k-50k)    │
+  │   3. Session files (7 days)     │
+  │   4. RAG results (if needed)    │
+  │   5. MCP tool results           │
+  │   6. User message               │
+  │                                 │
+  │  [Tool Filter]                  │
+  │   - get_available_tools()       │
+  │   - Based on current state      │
+  │                                 │
+  │  [Enforcement Hooks]            │
+  │   - session_file_check()        │
+  │   - after_tool_execution()      │
+  │   - plan_validation()           │
+  └─────────────────────────────────┘
+       ↓
+  Gemini 2.5 Pro/Flash
+  (with filtered tool list)
+       ↓
+  Tool Execution
+       ↓
+  Hooks (session update, validation)
+       ↓
+  Response to User
+
+  Phase 1: Core Harness
+  - State machine implementation
+  - Tool filtering based on state
+  - Session file enforcement
+  - Basic context layering
+
+  Phase 2: Context Engineering
+  - Google context caching integration
+  - RAG layer (File Search API)
+  - MCP server connections
+  - Multi-layer context builder
+
+  Phase 3: Evals
+  - Compliance tests (did agent create session file?)
+  - Plan mode tests (can agent modify code without planning?)
+  - Context retrieval tests (does RAG find relevant docs?)
+  - Cost tracking (context caching savings)
+
+  Phase 4: Production Features
+  - Web UI for harness control
+  - Session file viewer
+  - Plan approval interface
+  - Cost dashboard
+
+  ---
+  First Concrete Step
+
+  Want to start building this? Here's what we do:
+
+  1. New repo: stark-agent-harness
+  2. Bootstrap: Basic state machine + tool filtering
+  3. Session file enforcement: Prove the concept works
+  4. Eval: Test that agent cannot bypass enforcement
+
+  Should I create a plan for this? Or you want to talk through the architecture more first?
+
+  This is the kind of shit I LOVE building. Let's make an agent harness that actually enforces compliance instead
+  of hoping agents "remember" to behave. 💪

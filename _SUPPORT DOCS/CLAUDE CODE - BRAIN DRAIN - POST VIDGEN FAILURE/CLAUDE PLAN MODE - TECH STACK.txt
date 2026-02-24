@@ -1,0 +1,277 @@
+FOLLOW UP ON AGENTIC HARNESS TECH STACK
+
+● Man, I love these questions. Let's go deep.                                                                      
+   
+  ---                                                                                                              
+  Claude Code's Harness (My Best Guess)                                                                          
+                                                                                                                   
+  I don't have insider knowledge of Claude Code's source, but based on how it behaves and what I can see, here's my
+   educated guess:
+
+  Tech Stack (likely):
+  Runtime:     TypeScript/Node.js
+  API Client:  Anthropic API (Claude models)
+  State:       Filesystem-based + in-memory
+  Tools:       Local execution (Node.js child processes)
+  Context:     Custom management (compaction, memory, sessions)
+  Storage:     .claude/ directory (JSONL, JSON, Markdown)
+
+  Why I think it's Node.js/TypeScript:
+  - CLI tools from Anthropic typically use TS/Node
+  - Fast iteration, good ecosystem for terminal UIs
+  - Native filesystem integration
+  - Easy API client libraries
+  - Works cross-platform (Mac, Linux, Windows)
+
+  Architecture (inferred):
+  // Pseudocode - NOT actual Claude Code source
+
+  class ClaudeCodeSession {
+    // State management
+    mode: "normal" | "plan" | "awaiting_approval"
+    currentProject: string
+    conversationHistory: Message[]
+
+    // Tool system
+    availableTools: Tool[]
+    toolExecutor: ToolExecutor
+
+    // API integration
+    anthropicClient: AnthropicAPI
+
+    // Context management
+    contextWindow: number = 200000
+    compactionThreshold: number = 180000
+
+    async run() {
+      while (true) {
+        const userInput = await this.promptUser()
+        const messages = this.buildMessages(userInput)
+
+        const response = await this.anthropicClient.messages.create({
+          model: "claude-opus-4-6",
+          messages: messages,
+          tools: this.getAvailableTools(), // ← filtered by mode
+          max_tokens: 4096
+        })
+
+        // Handle tool calls
+        for (const toolCall of response.tool_uses) {
+          if (!this.isToolAvailable(toolCall.name)) {
+            // Reject if in wrong mode
+            continue
+          }
+
+          const result = await this.executeTool(toolCall)
+          this.conversationHistory.push(result)
+        }
+
+        // Check for mode switches
+        if (toolCall.name === "EnterPlanMode") {
+          this.mode = "plan"
+        }
+        if (toolCall.name === "ExitPlanMode") {
+          await this.presentPlanForApproval()
+        }
+      }
+    }
+
+    getAvailableTools(): Tool[] {
+      if (this.mode === "plan") {
+        return this.availableTools.filter(t =>
+          !["Edit", "Write", "Bash", "NotebookEdit"].includes(t.name)
+        )
+      }
+      return this.availableTools
+    }
+  }
+
+  Key design decisions I can infer:
+  1. File-based state (sessions in .claude/, not a database)
+  2. Synchronous tool execution (blocks until tool completes)
+  3. Local-first (everything runs on your machine, API calls go to Anthropic)
+  4. Context compression (smart compaction when approaching limit)
+  5. Session persistence (can resume sessions across restarts)
+
+  ---
+  Google ADK vs LangChain/LangGraph - Real Talk
+
+  I've seen both patterns in production. Here's the honest breakdown:
+
+  LangChain/LangGraph (Your Current Stack)
+
+  Strengths:
+  - ✅ Model agnostic - You can call Claude, GPT, Gemini, whoever
+  - ✅ Full control - You own every line of the orchestration
+  - ✅ Huge ecosystem - Tools, integrations, community patterns
+  - ✅ Proven at scale - Companies like Notion, Retool use it
+  - ✅ You already know it - No learning curve
+
+  Weaknesses:
+  - ❌ You build the infra - Deployment, scaling, monitoring = your problem
+  - ❌ State management is DIY - LangGraph gives you primitives, not solutions
+  - ❌ Integration tax - Every new service = custom integration
+  - ❌ Version churn - LangChain moves fast, breaking changes happen
+
+  Real-world pattern:
+  from langgraph.graph import StateGraph
+  from langchain_anthropic import ChatAnthropic
+  from langchain_google_vertexai import ChatVertexAI
+
+  class AgentState(TypedDict):
+      messages: List[Message]
+      mode: str
+      approved: bool
+
+  def research_node(state):
+      # Only read tools available
+      ...
+
+  def implementation_node(state):
+      # All tools available
+      ...
+
+  graph = StateGraph(AgentState)
+  graph.add_node("research", research_node)
+  graph.add_node("implementation", implementation_node)
+  graph.add_conditional_edges("research", should_get_approval)
+
+  You get: Granular control, but you're building the harness from primitives.
+
+  ---
+  Google Agent Development Kit (ADK)
+
+  Strengths:
+  - ✅ Batteries included - Vertex AI integration, scaling, monitoring built-in
+  - ✅ Google-backed infra - They handle uptime, deployment, scaling
+  - ✅ Faster to production - Less plumbing, more building
+  - ✅ Native Gemini - Tight integration with their models
+  - ✅ Enterprise support - SLAs, support contracts available
+
+  Weaknesses:
+  - ❌ Google lock-in - Hard to switch providers later
+  - ❌ Black box components - Less control over orchestration internals
+  - ❌ Gemini-centric - Using Claude means working against the grain
+  - ❌ Newer/less proven - Smaller community, fewer battle-tested patterns
+  - ❌ Opinionated - You build Google's way or fight the framework
+
+  Real-world pattern:
+  from google.cloud import aiplatform
+  from vertexai.preview import agent_builder
+
+  # More abstracted - less control over flow
+  agent = agent_builder.Agent(
+      model="gemini-2.0-flash",
+      tools=[...],
+      orchestration_mode="auto"  # Google decides flow
+  )
+
+  response = agent.run("Build me a video")
+
+  You get: Fast delivery, but on Google's terms.
+
+  ---
+  My Honest Recommendation for Your AI App Factory
+
+  Given your situation:
+  - ✅ You already use Vertex AI (Gemini, Imagen, TTS, STT)
+  - ✅ You want Claude as primary LLM (better reasoning)
+  - ✅ You have LangGraph experience
+  - ✅ You value control (CLAUDE.md proves this)
+  - ✅ You're building a product business (not enterprise IT)
+
+  I'd go with: LangGraph + containerized infra
+
+  Why:
+  Use LangGraph for:
+  → Agent orchestration (you control the flow)
+  → Tool execution (you define the tools)
+  → Multi-model routing (Claude for reasoning, Gemini for speed)
+
+  Use Google Cloud for:
+  → Hosting (Cloud Run for the harness)
+  → AI services (Vertex for Imagen, TTS, STT)
+  → Scaling (GKE if you outgrow Cloud Run)
+
+  But DON'T:
+  → Lock into Google's agent framework
+  → Give up control over orchestration
+  → Limit yourself to Gemini when Claude is better
+
+  Architecture I'd build:
+
+  ┌─────────────────────────────────────────┐
+  │   LangGraph Agent Harness (Cloud Run)  │
+  │                                         │
+  │  ┌─────────────┐    ┌────────────────┐ │
+  │  │ State Graph │────│ Tool Executor  │ │
+  │  └─────────────┘    └────────────────┘ │
+  │         │                    │          │
+  └─────────┼────────────────────┼──────────┘
+            │                    │
+            ├────────────────────┼────────────────┐
+            │                    │                │
+            ▼                    ▼                ▼
+     ┌──────────────┐   ┌──────────────┐  ┌──────────────┐
+     │ Anthropic    │   │ Vertex AI    │  │ Firestore    │
+     │ (Claude)     │   │ (Imagen/TTS) │  │ (State)      │
+     └──────────────┘   └──────────────┘  └──────────────┘
+
+  Why this wins:
+  1. Best of both worlds - Claude reasoning + Google services
+  2. No vendor lock-in - Can swap any piece
+  3. You control orchestration - LangGraph gives you the power
+  4. Google infra - But only where it helps (hosting, AI services)
+  5. Proven pattern - Companies do this successfully
+
+  ---
+  If You Were Building Claude Code from Scratch Today
+
+  Here's what I'd use (assuming you wanted to replicate it):
+
+  Core:           TypeScript + Bun (faster than Node)
+  API:            Anthropic SDK + Vertex AI SDK
+  State:          SQLite (local) + Firestore (cloud sync)
+  Tool System:    Custom (like Claude Code's)
+  Context Mgmt:   Anthropic's prompt caching + custom compression
+  CLI:            ink (React for terminals)
+  Deployment:     Standalone binary (Bun can compile to exe)
+
+  Why this stack:
+  - Bun is crazy fast, has built-in SQLite
+  - TypeScript for safety, ecosystem
+  - SQLite for local state (fast, simple, reliable)
+  - Firestore if you want cloud sync later
+  - Custom tool system gives you full control
+  - Anthropic API for Claude (duh)
+  - Vertex for Google services
+
+  But honestly? For your AI App Factory, I'd skip the CLI and build a web app:
+
+  Frontend:  Next.js (users prefer web UIs)
+  Backend:   LangGraph in FastAPI (Cloud Run)
+  State:     Firestore (real-time, scales)
+  Models:    Claude (reasoning) + Gemini (speed/cost)
+  Services:  Vertex AI (Imagen, TTS, STT)
+
+  This gives you:
+  - Multi-user by default (vs CLI = single user)
+  - Web UI (vs terminal = harder for non-techs)
+  - Cloud-first (vs local = deployment issues)
+  - Pay-per-use (vs always-on servers)
+
+  ---
+  Bottom Line
+
+  For prototyping fast: Google ADK might get you there quicker
+
+  For long-term control: LangGraph + Google Cloud infra wins
+
+  For your specific case (Claude + Vertex): LangGraph is the right call
+
+  Architecture over framework. Don't let Google or LangChain own your orchestration layer. That's your IP. Use them
+   for primitives, but YOU design the flow.
+
+  ---
+  Want me to sketch out the exact LangGraph agent harness architecture for your VidGen product? I can show you the
+  state graph, tool definitions, approval gates - the whole pattern. 🎯

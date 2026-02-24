@@ -1,0 +1,11 @@
+3:58 PM 24/2/2026
+
+  1. Read PYTHON_ADK_MANUAL_MISSION_BRIEF.md
+  2. Then read CONSOLIDATION_MISSION_BRIEF.md
+  3. Then read CLAUDE CODE - BRAIN DRAIN - POST VIDGEN FAILURE
+  4. Then read every /doc folder under every app name under /STARK PYTHON REPOS ... folder
+  5. then read SAMPLE_APP_BRIEF.md file
+
+* only after that you create a folder: /PYTHON_ADK_PLAYBOOKS
+
+- and go crazy writing the docs ... no exceptions! thanx in advance!! We have come a long way ... plz don't fuck this up!!

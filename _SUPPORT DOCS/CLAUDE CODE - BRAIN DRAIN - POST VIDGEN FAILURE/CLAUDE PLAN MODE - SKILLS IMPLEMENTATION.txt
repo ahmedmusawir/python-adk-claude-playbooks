@@ -1,0 +1,798 @@
+OK THIS ONE I WILL NEED YOU TO HUMANIZE FOR ME ... [NO CODE] [YOU CAN SPEAK YOUR MIND]
+         
+
+● Alright, let's break down EXACTLY how this works mechanically. I'll show you the concrete implementation details.
+   
+  ---                                                                                                              
+  1. "Invoked how?"                      
+                                                                                                                   
+  In My World (Claude Code):                                                                                       
+
+  I have a Skill tool in my tool list. When I recognize a skill is needed, I call it like any other tool:
+
+  # User says: "commit this code"
+  # I recognize this needs the commit skill
+
+  # I make a tool call:
+  tools.call("Skill", {
+      "skill": "commit",
+      "args": ""  # Optional arguments
+  })
+
+  # The harness intercepts this, loads the skill prompt, injects it into my context
+  # Next turn, I have full commit workflow instructions and follow them
+
+  The mechanics:
+  1. Skill tool is in my available tools list (always)
+  2. I call it by name when needed
+  3. Harness loads the skill content
+  4. Skill instructions appear in my context for subsequent turns
+
+  In Your Harness (Implementation):
+
+  class InvokeSkillTool:
+      """Tool definition that agent can call"""
+
+      @staticmethod
+      def schema():
+          """Tool schema for LLM"""
+          return {
+              "name": "InvokeSkill",
+              "description": "Load a specialized skill for a specific task. Available skills: commit, plan,
+  session_update, analyze_logs",
+              "parameters": {
+                  "type": "object",
+                  "properties": {
+                      "skill_name": {
+                          "type": "string",
+                          "description": "Name of the skill to invoke",
+                          "enum": ["commit", "plan", "session_update", "analyze_logs"]
+                      },
+                      "context": {
+                          "type": "object",
+                          "description": "Optional context parameters for the skill"
+                      }
+                  },
+                  "required": ["skill_name"]
+              }
+          }
+
+      @staticmethod
+      def execute(skill_name: str, context: dict = None):
+          """What happens when agent calls this tool"""
+          # Implementation below
+          pass
+
+  Agent invocation looks like:
+  // Agent (Gemini/GPT/Claude) makes tool call:
+  {
+    "tool_calls": [{
+      "name": "InvokeSkill",
+      "arguments": {
+        "skill_name": "commit",
+        "context": {}
+      }
+    }]
+  }
+
+  Key point: It's just a tool call. Same as when agent calls Read or Write. Nothing magical.
+
+  ---
+  2. "How do they change state?"
+
+  The State Change Mechanism:
+
+  The InvokeSkill tool execution triggers state changes. Here's the exact flow:
+
+  class InvokeSkillTool:
+      @staticmethod
+      def execute(skill_name: str, context: dict = None):
+          """Executed by harness when agent calls InvokeSkill"""
+
+          # 1. Fetch skill definition from registry
+          skill = harness.skill_registry.get(skill_name)
+
+          if not skill:
+              return {"error": f"Skill '{skill_name}' not found"}
+
+          # 2. Load skill instructions from GCS
+          skill_prompt = gcs_client.download_as_text(
+              bucket="my-skills-bucket",
+              blob_path=skill.prompt_file
+          )
+
+          # 3. CHANGE STATE (if skill requires it)
+          if skill.state_change:
+              harness.state = AgentState[skill.state_change]
+
+              # Example: skill.state_change = "PLANNING"
+              # Result: harness.state = AgentState.PLANNING
+
+          # 4. Update available tools based on new state
+          harness.active_skill = skill
+          harness.rebuild_tool_list()
+
+          # 5. Inject skill instructions into context
+          harness.add_system_message(f"""
+  🎯 SKILL ACTIVATED: {skill_name}
+
+  {skill_prompt}
+
+  Your available tools have been updated to: {harness.get_available_tools()}
+  Follow the instructions above.
+  """)
+
+          return {
+              "status": "success",
+              "skill_loaded": skill_name,
+              "state_changed_to": harness.state.value if skill.state_change else "no change",
+              "available_tools": [tool.name for tool in harness.get_available_tools()]
+          }
+
+  Concrete example:
+
+  # Skill definition includes state change:
+  skills_registry = {
+      "plan": Skill(
+          name="plan",
+          prompt_file="skills/planning/plan_mode.md",
+          state_change="PLANNING",  # ← This triggers state change
+          allowed_tools=["Read", "Grep", "Glob"]
+      )
+  }
+
+  # When agent calls InvokeSkill("plan"):
+  def execute(skill_name="plan"):
+      skill = skills_registry["plan"]
+
+      # Change harness state
+      harness.state = AgentState.PLANNING  # ← State changed here
+
+      # Rebuild tool list based on new state
+      harness.rebuild_tool_list()
+      # Now only Read, Grep, Glob are available
+
+  The state change is a side effect of tool execution. Just like calling Write creates a file, calling InvokeSkill
+  changes harness state.
+
+  ---
+  3. "Registry how?"
+
+  What IS a Registry?
+
+  A registry is just a dictionary/map of skill definitions. It can be:
+  - In-memory dict
+  - JSON file
+  - Database
+  - GCS bucket with index
+
+  Simple Registry (In-Memory):
+
+  # skills_registry.py
+  from dataclasses import dataclass
+  from typing import List, Optional
+
+  @dataclass
+  class Skill:
+      name: str
+      description: str
+      prompt_file: str  # Path in GCS bucket
+      allowed_tools: List[str]
+      state_change: Optional[str] = None
+      triggers: List[str] = None  # Keywords that suggest this skill
+
+  class SkillRegistry:
+      def __init__(self):
+          self.skills = {
+              "commit": Skill(
+                  name="commit",
+                  description="Git commit workflow with best practices",
+                  prompt_file="gs://my-skills/git/commit.md",
+                  allowed_tools=["Bash", "Read"],
+                  triggers=["commit", "/commit", "git commit"]
+              ),
+
+              "plan": Skill(
+                  name="plan",
+                  description="Enter planning mode before code changes",
+                  prompt_file="gs://my-skills/planning/plan_mode.md",
+                  allowed_tools=["Read", "Grep", "Glob"],
+                  state_change="PLANNING",  # ← Changes state when invoked
+                  triggers=["plan", "/plan", "enter plan mode"]
+              ),
+
+              "session_update": Skill(
+                  name="session_update",
+                  description="Update session file with progress",
+                  prompt_file="gs://my-skills/session/update.md",
+                  allowed_tools=["Read", "Edit"],
+                  triggers=["update session", "/session"]
+              )
+          }
+
+      def get(self, name: str) -> Optional[Skill]:
+          """Get skill by name"""
+          return self.skills.get(name)
+
+      def list_all(self) -> List[str]:
+          """List available skill names"""
+          return list(self.skills.keys())
+
+      def find_by_trigger(self, user_message: str) -> Optional[Skill]:
+          """Find skill based on trigger keywords"""
+          for skill in self.skills.values():
+              if skill.triggers:
+                  if any(trigger in user_message.lower() for trigger in skill.triggers):
+                      return skill
+          return None
+
+  # Global registry instance
+  skill_registry = SkillRegistry()
+
+  GCS-Based Registry:
+
+  # skills_registry_gcs.py
+  import json
+  from google.cloud import storage
+
+  class GCSSkillRegistry:
+      """Skills stored in GCS bucket"""
+
+      def __init__(self, bucket_name: str, index_file: str = "skills/index.json"):
+          self.bucket_name = bucket_name
+          self.client = storage.Client()
+          self.bucket = self.client.bucket(bucket_name)
+
+          # Load index file
+          blob = self.bucket.blob(index_file)
+          index_data = json.loads(blob.download_as_text())
+
+          self.skills = {
+              skill["name"]: Skill(**skill)
+              for skill in index_data["skills"]
+          }
+
+      def get(self, name: str) -> Optional[Skill]:
+          return self.skills.get(name)
+
+      def load_prompt(self, skill: Skill) -> str:
+          """Load skill prompt from GCS"""
+          blob = self.bucket.blob(skill.prompt_file)
+          return blob.download_as_text()
+
+  GCS bucket structure:
+  gs://my-skills-bucket/
+  ├── index.json                    # Registry index
+  ├── git/
+  │   ├── commit.md                # Skill prompt
+  │   └── pr_review.md
+  ├── planning/
+  │   ├── plan_mode.md
+  │   └── exit_plan.md
+  └── session/
+      ├── update.md
+      └── create.md
+
+  index.json:
+  {
+    "skills": [
+      {
+        "name": "commit",
+        "description": "Git commit workflow",
+        "prompt_file": "git/commit.md",
+        "allowed_tools": ["Bash", "Read"],
+        "triggers": ["commit", "/commit"]
+      },
+      {
+        "name": "plan",
+        "description": "Planning mode",
+        "prompt_file": "planning/plan_mode.md",
+        "allowed_tools": ["Read", "Grep", "Glob"],
+        "state_change": "PLANNING",
+        "triggers": ["plan", "/plan"]
+      }
+    ]
+  }
+
+  Usage:
+  # Initialize registry from GCS
+  registry = GCSSkillRegistry(bucket_name="my-skills-bucket")
+
+  # Get skill
+  skill = registry.get("commit")
+
+  # Load its prompt
+  prompt = registry.load_prompt(skill)
+
+  ---
+  4. "InvokeSkill tool - like file reader?"
+
+  YES, EXACTLY like your file reader!
+
+  Let me compare them side-by-side:
+
+  Your Existing File Reader Tool:
+
+  class FileReaderTool:
+      """Tool to read files from GCS"""
+
+      @staticmethod
+      def schema():
+          return {
+              "name": "ReadFile",
+              "description": "Read a file from Google Cloud Storage",
+              "parameters": {
+                  "type": "object",
+                  "properties": {
+                      "file_path": {
+                          "type": "string",
+                          "description": "Path to file in GCS (e.g., 'resume.pdf')"
+                      }
+                  },
+                  "required": ["file_path"]
+              }
+          }
+
+      @staticmethod
+      def execute(file_path: str):
+          # Download from GCS
+          content = gcs_client.download(file_path)
+
+          # Return to agent
+          return {
+              "status": "success",
+              "file_path": file_path,
+              "content": content
+          }
+
+  How it works:
+  1. Agent needs resume info
+  2. Agent calls: ReadFile(file_path="resume.pdf")
+  3. Tool downloads from GCS
+  4. Content returned to agent
+  5. Agent uses content to answer question
+
+  InvokeSkill Tool (Same Pattern):
+
+  class InvokeSkillTool:
+      """Tool to load a skill from GCS"""
+
+      @staticmethod
+      def schema():
+          return {
+              "name": "InvokeSkill",
+              "description": "Load a specialized skill for a task",
+              "parameters": {
+                  "type": "object",
+                  "properties": {
+                      "skill_name": {
+                          "type": "string",
+                          "description": "Name of skill (e.g., 'commit', 'plan')"
+                      }
+                  },
+                  "required": ["skill_name"]
+              }
+          }
+
+      @staticmethod
+      def execute(skill_name: str):
+          # Get skill from registry
+          skill = skill_registry.get(skill_name)
+
+          # Download prompt from GCS
+          prompt = gcs_client.download(skill.prompt_file)
+
+          # Inject into context
+          harness.add_system_message(prompt)
+
+          # Change state if needed
+          if skill.state_change:
+              harness.state = AgentState[skill.state_change]
+
+          # Return confirmation
+          return {
+              "status": "success",
+              "skill_loaded": skill_name,
+              "instructions": "Skill instructions loaded. Follow them for this task."
+          }
+
+  How it works:
+  1. Agent needs commit workflow
+  2. Agent calls: InvokeSkill(skill_name="commit")
+  3. Tool downloads skill prompt from GCS
+  4. Prompt injected into agent context
+  5. Agent follows skill instructions
+
+  Key Difference:
+  ┌─────────────────────────────┬────────────────────────────────────┐
+  │         File Reader         │          Skill Invocation          │
+  ├─────────────────────────────┼────────────────────────────────────┤
+  │ Loads data (resume content) │ Loads instructions (how to commit) │
+  ├─────────────────────────────┼────────────────────────────────────┤
+  │ Content returned to agent   │ Instructions injected into context │
+  ├─────────────────────────────┼────────────────────────────────────┤
+  │ No state change             │ May change harness state           │
+  ├─────────────────────────────┼────────────────────────────────────┤
+  │ No tool filtering           │ May filter available tools         │
+  └─────────────────────────────┴────────────────────────────────────┘
+  But mechanically? Identical. Both are tools that fetch content from storage and make it available to the agent.
+
+  ---
+  5. "How to activate, and when?"
+
+  Activation Mechanism:
+
+  Option A: Agent decides (auto-detection)
+  # Agent sees user message: "commit this code"
+  # Agent thinks: "This needs the commit skill"
+  # Agent calls: InvokeSkill("commit")
+
+  Option B: User triggers explicitly
+  # User types: "/commit"
+  # Harness detects "/" prefix
+  # Harness auto-invokes: InvokeSkill("commit")
+
+  Option C: Harness auto-suggests
+  def process_user_message(message: str):
+      # Check if message matches skill triggers
+      skill = skill_registry.find_by_trigger(message)
+
+      if skill:
+          # Inject suggestion
+          harness.add_system_message(f"""
+  💡 SUGGESTION: User message matches the '{skill.name}' skill.
+  Consider invoking: InvokeSkill("{skill.name}")
+  """)
+
+  When to Activate:
+
+  Built into skill descriptions:
+  Skill(
+      name="plan",
+      description="Enter planning mode before code changes. Use BEFORE modifying any code.",
+      # Agent sees "Use BEFORE modifying" in description
+  )
+
+  In system prompt:
+  ## Skill Usage Guidelines
+
+  - **Before code modifications**: Invoke "plan" skill
+  - **Before git commit**: Invoke "commit" skill
+  - **After significant work**: Invoke "session_update" skill
+  - **For PDF analysis**: Invoke "pdf_analysis" skill
+
+  Enforcement (strongest):
+  class HarnessHooks:
+      def before_tool_execution(self, tool_name: str):
+          """Hook that runs before any tool executes"""
+
+          # If agent tries to Edit/Write without planning first
+          if tool_name in ["Edit", "Write"] and harness.state != AgentState.PLANNING:
+              # Block the tool
+              raise ToolBlockedError(
+                  "Cannot modify code without a plan. Invoke 'plan' skill first."
+              )
+
+  In practice, you'd use a combination:
+  1. Skill descriptions guide agent when to use
+  2. System prompt emphasizes critical skills
+  3. Harness hooks enforce must-have skills (like plan before code)
+
+  ---
+  6. "Claude knows skills, but Gemini/GPT?"
+
+  The Truth: Claude Doesn't "Know" Skills Either
+
+  Here's what's actually happening in my world:
+
+  My system prompt includes:
+  Available skills:
+  - commit: Git commit workflow
+  - review-pr: Pull request review
+  - pdf: PDF analysis
+
+  To invoke a skill, use the Skill tool.
+
+  That's it. I don't have built-in knowledge of skills. The harness:
+  1. Lists available skills in my system prompt
+  2. Gives me a Skill tool
+  3. I call it when needed
+  4. Skill loads
+
+  Claude Code's "skill support" is just:
+  - Skill tool in my tool list
+  - Instructions on when to use it
+  - Nice UI for showing "/commit" shortcuts
+
+  Gemini/GPT Can Do THE EXACT SAME THING:
+
+  # System prompt (works with ANY model)
+  system_prompt = """
+  You are a coding agent with access to specialized skills.
+
+  Available skills:
+  - commit: Git commit workflow with best practices
+  - plan: Enter planning mode before code changes
+  - session_update: Update session file with progress
+
+  To activate a skill, call: InvokeSkill(skill_name="...")
+
+  Use skills when the task matches their purpose.
+  """
+
+  # Tool definition (works with ANY model)
+  tools = [
+      {
+          "name": "InvokeSkill",
+          "description": "Load a specialized skill",
+          "parameters": {
+              "type": "object",
+              "properties": {
+                  "skill_name": {"type": "string", "enum": ["commit", "plan", "session_update"]}
+              }
+          }
+      }
+  ]
+
+  # Call Gemini with skills
+  response = genai_model.generate_content(
+      contents=conversation,
+      tools=tools,
+      system_instruction=system_prompt
+  )
+
+  # Call GPT with skills
+  response = openai.chat.completions.create(
+      messages=[{"role": "system", "content": system_prompt}, ...],
+      tools=tools
+  )
+
+  # Call Claude with skills
+  response = anthropic.messages.create(
+      system=system_prompt,
+      messages=conversation,
+      tools=tools
+  )
+
+  They all work identically:
+  1. System prompt tells them about skills
+  2. InvokeSkill tool is available
+  3. Model calls it when appropriate
+  4. Harness loads skill and injects instructions
+
+  The Only Difference:
+  ┌──────────────────────────────┬─────────────────────────┐
+  │     Claude Code (Native)     │   Your Harness (DIY)    │
+  ├──────────────────────────────┼─────────────────────────┤
+  │ Skills managed by Anthropic  │ Skills managed by you   │
+  ├──────────────────────────────┼─────────────────────────┤
+  │ Listed in UI                 │ You build the UI        │
+  ├──────────────────────────────┼─────────────────────────┤
+  │ "/commit" shortcuts built-in │ You implement shortcuts │
+  ├──────────────────────────────┼─────────────────────────┤
+  │ Skill marketplace (future?)  │ You create your own     │
+  └──────────────────────────────┴─────────────────────────┘
+  Functionally? No difference. It's just infrastructure.
+
+  ---
+  Concrete Example: Full Flow
+
+  Let me show you the ENTIRE flow from user message to skill execution:
+
+  Setup:
+
+  # 1. Define skill in registry
+  skill_registry = {
+      "commit": Skill(
+          name="commit",
+          description="Git commit workflow",
+          prompt_file="gs://skills/git/commit.md",
+          allowed_tools=["Bash", "Read"],
+          state_change=None  # No state change for commit
+      )
+  }
+
+  # 2. System prompt includes skill list
+  system_prompt = """
+  You are a coding agent.
+
+  Available skills:
+  - commit: Use before making git commits
+
+  To activate: InvokeSkill(skill_name="commit")
+  """
+
+  # 3. Tools include InvokeSkill
+  tools = [ReadTool(), WriteTool(), EditTool(), BashTool(), InvokeSkillTool()]
+
+  Runtime Flow:
+
+  # Step 1: User sends message
+  user_message = "I made some changes, commit them"
+
+  # Step 2: Build context
+  conversation = [
+      {"role": "system", "content": system_prompt},
+      {"role": "user", "content": user_message}
+  ]
+
+  # Step 3: Call LLM
+  response = gemini.generate_content(
+      contents=conversation,
+      tools=[tool.schema() for tool in tools]
+  )
+
+  # Step 4: Agent responds with tool call
+  # response.tool_calls = [
+  #     {
+  #         "name": "InvokeSkill",
+  #         "arguments": {"skill_name": "commit"}
+  #     }
+  # ]
+
+  # Step 5: Harness executes tool
+  for tool_call in response.tool_calls:
+      if tool_call.name == "InvokeSkill":
+          result = InvokeSkillTool.execute(**tool_call.arguments)
+
+          # result = {
+          #     "status": "success",
+          #     "skill_loaded": "commit",
+          #     "instructions": "Loaded git commit workflow"
+          # }
+
+  # Step 6: Skill execution loaded skill prompt from GCS:
+  skill_prompt = """
+  # Git Commit Skill
+
+  ## Steps:
+  1. Run git status
+  2. Run git diff
+  3. Analyze changes
+  4. Stage files
+  5. Commit with message
+  6. Verify
+
+  Follow these steps exactly.
+  """
+
+  # Step 7: Inject skill prompt into context
+  conversation.append({
+      "role": "system",
+      "content": f"🎯 SKILL ACTIVATED: commit\n\n{skill_prompt}"
+  })
+
+  # Step 8: Call LLM again with skill instructions loaded
+  response = gemini.generate_content(
+      contents=conversation,  # Now includes skill prompt
+      tools=[tool.schema() for tool in tools]
+  )
+
+  # Step 9: Agent follows skill instructions
+  # Agent now calls: Bash("git status"), Bash("git diff"), etc.
+
+  Key insight: It's a two-turn process:
+  1. First turn: Agent invokes skill
+  2. Second turn: Agent follows loaded skill instructions
+
+  ---
+  Practical Implementation for Your Harness
+
+  # harness.py
+  class StarkAgentHarness:
+      def __init__(self):
+          self.skill_registry = GCSSkillRegistry("my-skills-bucket")
+          self.active_skills = []
+          self.state = AgentState.NORMAL
+
+          self.tools = [
+              ReadTool(),
+              WriteTool(),
+              EditTool(),
+              BashTool(),
+              InvokeSkillTool(self)  # Pass harness reference
+          ]
+
+      def get_system_prompt(self):
+          """Build system prompt with skill list"""
+          base = load_from_gcs("gs://prompts/system.md")
+
+          skills_list = "\n".join(
+              f"- {name}: {self.skill_registry.get(name).description}"
+              for name in self.skill_registry.list_all()
+          )
+
+          return f"{base}\n\n## Available Skills:\n{skills_list}\n\nActivate with InvokeSkill tool."
+
+      def get_available_tools(self):
+          """Filter tools based on state"""
+          if self.state == AgentState.PLANNING:
+              return [t for t in self.tools if t.name in ["Read", "Grep", "Glob", "InvokeSkill"]]
+          else:
+              return self.tools
+
+      def process_turn(self, user_message: str):
+          """Main conversation loop"""
+
+          # Build context
+          context = self.build_context(user_message)
+
+          # Get available tools
+          tools = self.get_available_tools()
+
+          # Call LLM
+          response = gemini.generate_content(
+              contents=context,
+              tools=[t.schema() for t in tools],
+              system_instruction=self.get_system_prompt()
+          )
+
+          # Execute tool calls
+          for tool_call in response.tool_calls:
+              self.execute_tool(tool_call)
+
+          return response
+
+  class InvokeSkillTool:
+      def __init__(self, harness):
+          self.harness = harness
+
+      def schema(self):
+          return {
+              "name": "InvokeSkill",
+              "description": "Load a specialized skill",
+              "parameters": {
+                  "type": "object",
+                  "properties": {
+                      "skill_name": {
+                          "type": "string",
+                          "enum": list(self.harness.skill_registry.list_all())
+                      }
+                  }
+              }
+          }
+
+      def execute(self, skill_name: str):
+          # Get skill
+          skill = self.harness.skill_registry.get(skill_name)
+
+          # Load prompt from GCS
+          prompt = self.harness.skill_registry.load_prompt(skill)
+
+          # Add to active skills
+          self.harness.active_skills.append({
+              "name": skill_name,
+              "prompt": prompt
+          })
+
+          # Change state if needed
+          if skill.state_change:
+              self.harness.state = AgentState[skill.state_change]
+
+          # Inject instructions
+          self.harness.add_system_message(f"🎯 SKILL: {skill_name}\n\n{prompt}")
+
+          return {
+              "status": "success",
+              "skill": skill_name,
+              "state": self.harness.state.value
+          }
+
+  ---
+  Summary with Concrete Answers:
+  ┌────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────┐
+  │        Question        │                                        Answer                                        │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ Invoked how?           │ Agent calls InvokeSkill tool (same as calling Read/Write)                            │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ How change state?      │ InvokeSkill.execute() sets harness.state = AgentState.PLANNING                       │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ Registry how?          │ Dict/JSON mapping skill names to Skill objects, optionally backed by GCS             │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ Like file reader?      │ YES, exact same pattern: tool call → fetch from GCS → return to agent                │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ How/when activate?     │ Agent decides based on task OR harness auto-suggests OR enforcement hooks require it │
+  ├────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────┤
+  │ Works with Gemini/GPT? │ YES, it's just a tool + system prompt. Nothing Claude-specific.                      │
+  └────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────┘
+  Ready to build this in your ADK bundle? 🔥
